@@ -11,7 +11,11 @@ Browser Print work unchanged.
 
 - **Works with Zebra's BrowserPrint JS library.** It answers on `http://127.0.0.1:9100`,
   just like Zebra's app does.
+- **Asks first:** when a new website tries to print, a small window asks "Allow this website
+  to print?". The page's print waits for your answer.
 - **Printers:** network (TCP 9100), USB (`/dev/usb/lp*`) and CUPS queues (sent raw).
+  **Find printers** looks for network printers for you.
+- **Images and PDFs:** PNG, JPEG, GIF, BMP and PDF files are turned into ZPL graphics.
 - **Tray icon:** switch the default printer, open the window, quit.
 - **Settings window:** add, rename and remove printers, choose the default,
   print a test label, check printer status, approve websites, start at login.
@@ -23,10 +27,11 @@ Build the `.deb` package and install it:
 
 ```bash
 ./packaging/build-deb.sh
-sudo apt install ./dist/z-browser-print_0.3.0_amd64.deb
+sudo apt install ./dist/z-browser-print_0.4.0_amd64.deb
 ```
 
-Building needs Rust (https://rustup.rs).
+Building needs Rust (https://rustup.rs). Printing PDFs needs `poppler-utils`, which the
+package recommends.
 
 The package installs:
 - the command `zprint`, plus `zprint-fake-printer` for testing without hardware
@@ -43,18 +48,31 @@ sudo apt remove z-browser-print
 
 ## Web apps made for Zebra Browser Print
 
-Nothing changes in the web app.
+Nothing changes in the web app. The first time it tries to print, a window asks
+"Allow this website to print?". Click **Allow** and the print goes through.
 
-1. Open the web app once and let it try to print.
-2. In Z Browser Print, the **Websites** tab now shows the site under "Waiting for approval".
-3. Click **Allow**, then print again.
+- **Block** refuses the site for good. You can unblock it in the **Websites** tab.
+- Closing the window without answering refuses it until Z Browser Print restarts. The site
+  then waits in the **Websites** tab under "Waiting for approval", with an **Allow** button.
+- To refuse new sites without asking, turn off "Ask when a new website wants to print" in
+  the **General** tab.
 
 | BrowserPrint call | Supported |
 |---|---|
 | `getDefaultDevice`, `getLocalDevices`, `getApplicationConfiguration` | yes |
 | `device.send`, `sendFile` | yes |
 | `read`, `sendThenRead`, `readUntilStringReceived`, `readOnInterval` | yes. Replies to query commands (`~HS`, `~HQES`, `^HH`, `! U1 getvar`...) are kept for the next `read` |
-| `sendUrl`, `convert`, `convertAndSendFile`, `scanImage` | no. They return an error saying so |
+| `sendUrl` | yes. Z Browser Print downloads the file (http/https, up to 32 MB) |
+| `convertAndSendFile`, `convert` | yes, to ZPL, for PNG, JPEG, GIF, BMP and PDF. Options: `toFormat: "zpl"`, `fitTo: {width, height}` in dots, `action: "print"` or `"return"` |
+| `scanImage` | no. It returns an error saying so |
+
+Images become one `^GFA` graphic per label: black where the picture is darker than
+mid-grey, so logos and barcodes stay sharp. Each PDF page becomes one label at 203 dpi.
+Images and PDFs sent with `send`, `sendFile` or `sendUrl` are converted too, rather than
+reaching the printer as garbage.
+
+`convert` with `action: "return"` gives `{"data": "<zpl>"}`. Zebra doesn't document this
+response format, so this is our best match.
 
 CUPS printers show up as Zebra "driver" printers. They print, but can't answer reads.
 
@@ -64,6 +82,21 @@ whether a site may access devices on your local network; click Allow.
 
 If something else needs port 9100, turn off "Answer apps made for Zebra Browser Print"
 in the General tab.
+
+## Finding network printers
+
+In **Printers > + Add printer > Network**, click **Find printers**. It checks every
+address on your network (up to about 1,000) for port 9100 and lists what answers.
+Zebra printers are named and shown in bold when they answer SNMP. Click **Use** to fill
+in the address.
+
+The scan never sends data to port 9100: it connects and hangs up. That's because any
+other printer on port 9100 would print whatever it receives as text. To try the scan
+from a terminal:
+
+```bash
+cargo run -p zprint-transports --example netscan
+```
 
 ## Run from the source folder
 
@@ -133,6 +166,8 @@ Use `--config <path>` or `$ZPRINT_CONFIG` to point somewhere else.
 port = 9180
 zebra_compat = true       # answer Zebra's BrowserPrint library on 127.0.0.1:9100
 allowed_origins = ["https://app.example.com"]
+denied_origins = []        # sites you clicked Block for
+ask_new_sites = true       # show the "Allow this website to print?" window
 default_printer = "warehouse"
 
 [[printers]]
@@ -160,8 +195,9 @@ queue = "Zebra_ZD420"
 
 - It listens on 127.0.0.1 only.
 - `Host` must be 127.0.0.1, localhost or [::1] on one of its ports. This blocks DNS rebinding.
-- A request with an `Origin` header must come from an allowed website. Browsers send
-  `Origin` on every cross-site request, so other websites cannot print or list printers.
+- A request with an `Origin` header must come from an allowed website, or you are asked
+  first. Browsers send `Origin` on every cross-site request, so no website can print or
+  list printers without your OK.
 - `/v1/admin/*` refuses any request that has an `Origin` header (web pages).
 
 ## Layout
@@ -181,9 +217,9 @@ zebra/             where to put Zebra's BrowserPrint JS for reference (not inclu
 
 ## Roadmap
 
-- A pop-up asking "Allow this site to print?" the first time a site tries to print
-- `sendUrl` and image/PDF conversion
-- Network discovery (mDNS, port 9100 scan)
+- Dithering for photos (images are black/white at mid-grey today)
+- `scanImage`
+- HTTPS on port 9101 (only Safari uses it, which Linux doesn't have)
 
 ## License
 

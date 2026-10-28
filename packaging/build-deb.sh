@@ -28,7 +28,7 @@ Section: utils
 Priority: optional
 Architecture: $ARCH
 Depends: libc6, libgcc-s1, libgl1, libegl1, libx11-6, libxcursor1, libxrandr2, libxi6, libxkbcommon0, libxkbcommon-x11-0
-Recommends: cups-client, xdg-utils
+Recommends: cups-client, xdg-utils, poppler-utils
 Suggests: python3
 Replaces: zprint
 Conflicts: zprint

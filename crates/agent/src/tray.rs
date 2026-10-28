@@ -35,7 +35,7 @@ pub async fn spawn(state: Arc<AppState>, config_path: PathBuf) -> anyhow::Result
 impl ZTray {
     fn open_settings(&self) {
         spawn_detached(
-            Command::new(std::env::current_exe().unwrap_or_else(|_| "zprint".into()))
+            Command::new(zprint_core::program_path().unwrap_or_else(|_| "zprint".into()))
                 .arg("settings")
                 .arg("--config")
                 .arg(&self.config_path),

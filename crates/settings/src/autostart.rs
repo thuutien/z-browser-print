@@ -52,7 +52,7 @@ pub fn set(enabled: bool, config_path: &Path) -> anyhow::Result<()> {
 }
 
 fn desktop_entry(config_path: &Path, hidden: bool) -> anyhow::Result<String> {
-    let exe = std::env::current_exe()?;
+    let exe = zprint_core::program_path()?;
     // Only name the config file when it isn't the usual one.
     let config_arg = match Config::default_path() {
         Ok(default) if default == config_path => String::new(),

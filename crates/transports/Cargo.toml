@@ -9,3 +9,6 @@ zprint-core.workspace = true
 async-trait.workspace = true
 libc.workspace = true
 tokio = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

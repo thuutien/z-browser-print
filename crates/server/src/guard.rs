@@ -2,9 +2,9 @@
 //!
 //! - Host must be 127.0.0.1/localhost on one of our ports. This blocks DNS rebinding,
 //!   where an attacker's domain is pointed at 127.0.0.1.
-//! - Origin, when present, must be our own or in the allowlist. Browsers always
-//!   send Origin on cross-site requests and on every POST, so a random website
-//!   can never print. Requests without Origin come from local programs (curl,
+//! - Origin, when present, must be our own or in the allowlist. An unknown origin
+//!   makes us ask the user first (see consent.rs). Browsers always send Origin on
+//!   cross-site requests and on every POST, so a website can't print unasked. Requests without Origin come from local programs (curl,
 //!   scripts), which could reach the printer anyway.
 //! - /v1/admin/* is only for local programs (no Origin header at all).
 
@@ -15,7 +15,7 @@ use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-use crate::AppState;
+use crate::{consent, AppState};
 
 pub async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     if !host_ok(req.headers(), &st) {
@@ -36,7 +36,7 @@ pub async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) ->
         return (StatusCode::FORBIDDEN, "admin API is not available to web pages").into_response();
     }
 
-    if !origin_ok(&origin, &st) {
+    if !st.origin_allowed(&origin) && !consent::ask(&st, &origin).await {
         tracing::warn!(%origin, "blocked request from origin that is not allowed");
         st.note_blocked(&origin);
         return (
@@ -93,14 +93,6 @@ fn host_ok(headers: &HeaderMap, st: &AppState) -> bool {
             ]
         })
         .any(|h| h.eq_ignore_ascii_case(host))
-}
-
-fn origin_ok(origin: &str, st: &AppState) -> bool {
-    let own = [
-        format!("http://127.0.0.1:{}", st.port),
-        format!("http://localhost:{}", st.port),
-    ];
-    own.iter().any(|o| o == origin) || st.printers().allowed_origins.iter().any(|o| o == origin)
 }
 
 fn add_cors(h: &mut HeaderMap, origin: &str) {

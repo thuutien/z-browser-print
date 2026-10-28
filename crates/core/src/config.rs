@@ -23,6 +23,12 @@ pub struct Config {
     /// Web sites allowed to print, exactly as the browser sends Origin.
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+    /// Web sites the user refused to let print; never asked about again.
+    #[serde(default)]
+    pub denied_origins: Vec<String>,
+    /// Ask the user when an unknown website tries to print.
+    #[serde(default = "yes")]
+    pub ask_new_sites: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_printer: Option<String>,
     #[serde(default)]
@@ -92,6 +98,8 @@ impl Default for Config {
             port: DEFAULT_PORT,
             zebra_compat: true,
             allowed_origins: Vec::new(),
+            denied_origins: Vec::new(),
+            ask_new_sites: true,
             default_printer: None,
             printers: Vec::new(),
         }
@@ -206,6 +214,8 @@ mod tests {
             port: 9180,
             zebra_compat: false,
             allowed_origins: vec!["https://app.example.com".into()],
+            denied_origins: vec!["https://evil.example".into()],
+            ask_new_sites: false,
             default_printer: Some("usb".into()),
             printers: vec![
                 PrinterConfig {

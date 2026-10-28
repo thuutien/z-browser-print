@@ -63,7 +63,7 @@ pub fn reload(port: u16) -> Result<(), String> {
 
 /// Start the agent in the background (this same program without "settings").
 pub fn start(config_path: &Path) -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
+    let exe = zprint_core::program_path()?;
     let mut child = Command::new(exe)
         .arg("--config")
         .arg(config_path)

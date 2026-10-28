@@ -3,6 +3,9 @@
 
 mod agent;
 mod autostart;
+mod prompt;
+
+pub use prompt::run as ask_origin;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -12,13 +15,14 @@ use eframe::egui;
 use zprint_core::config::{Config, Connection, PrinterConfig, RAW_PORT};
 use zprint_core::status::{parse_host_status, HostStatus};
 use zprint_transports::discover::{self, CupsQueue, UsbDevice};
+use zprint_transports::netscan::{self, NetworkPrinter};
 
 pub const APP_NAME: &str = "Z Browser Print";
 const AGENT_POLL: Duration = Duration::from_secs(3);
 const OK: egui::Color32 = egui::Color32::from_rgb(40, 160, 80);
 const WARN: egui::Color32 = egui::Color32::from_rgb(214, 132, 20);
 /// 64x64 RGBA app icon, rendered from data/zprint.svg.
-const ICON_RGBA: &[u8] = include_bytes!("../../../data/zprint-64.rgba");
+pub(crate) const ICON_RGBA: &[u8] = include_bytes!("../../../data/zprint-64.rgba");
 
 pub fn run(config_path: PathBuf) -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
@@ -41,7 +45,7 @@ pub fn run(config_path: PathBuf) -> anyhow::Result<()> {
     .map_err(|e| anyhow::anyhow!("could not open the settings window: {e}"))
 }
 
-fn compact_style(style: &mut egui::Style) {
+pub(crate) fn compact_style(style: &mut egui::Style) {
     use egui::{FontId, TextStyle};
     style.text_styles = [
         (TextStyle::Heading, FontId::proportional(16.0)),
@@ -61,6 +65,13 @@ enum Tab {
     Printers,
     Websites,
     General,
+}
+
+#[derive(Clone)]
+enum Scan {
+    Idle,
+    Running,
+    Done(Vec<NetworkPrinter>),
 }
 
 #[derive(Clone)]
@@ -102,10 +113,13 @@ enum Action {
     AddOrigin,
     AllowOrigin(String),
     RemoveOrigin(usize),
+    Unblock(String),
+    SetAskNewSites(bool),
     SetZebraCompat(bool),
     SetAutostart(bool),
     StartAgent,
     RefreshDevices,
+    ScanNetwork,
 }
 
 struct SettingsApp {
@@ -127,6 +141,8 @@ struct SettingsApp {
     tab: Tab,
     /// The add-printer form is open.
     adding: bool,
+    /// "Find printers" results, filled in by a background scan.
+    scan: Arc<Mutex<Scan>>,
 }
 
 impl SettingsApp {
@@ -168,6 +184,7 @@ impl SettingsApp {
             rename_pending: false,
             tab: Tab::Printers,
             adding: false,
+            scan: Arc::new(Mutex::new(Scan::Idle)),
         };
         app.refresh_devices();
 
@@ -358,10 +375,19 @@ impl SettingsApp {
             Action::AddOrigin => self.add_origin(),
             Action::AllowOrigin(origin) => {
                 self.blocked.lock().unwrap().retain(|o| *o != origin);
+                self.config.denied_origins.retain(|o| *o != origin);
                 if !self.config.allowed_origins.contains(&origin) {
                     self.config.allowed_origins.push(origin.clone());
                     self.save(&format!("{origin} can now print."));
                 }
+            }
+            Action::Unblock(origin) => {
+                self.config.denied_origins.retain(|o| *o != origin);
+                self.save(&format!("Unblocked {origin}. It will be asked about next time."));
+            }
+            Action::SetAskNewSites(on) => {
+                self.config.ask_new_sites = on;
+                self.save(if on { "New websites will be asked about." } else { "New websites will be refused." });
             }
             Action::SetZebraCompat(on) => {
                 self.config.zebra_compat = on;
@@ -385,6 +411,15 @@ impl SettingsApp {
                 }
             },
             Action::StartAgent => self.start_agent(),
+            Action::ScanNetwork => {
+                *self.scan.lock().unwrap() = Scan::Running;
+                let (scan, ctx) = (self.scan.clone(), ctx.clone());
+                self.rt.spawn(async move {
+                    let found = netscan::scan().await;
+                    *scan.lock().unwrap() = Scan::Done(found);
+                    ctx.request_repaint();
+                });
+            }
             Action::RefreshDevices => {
                 self.refresh_devices();
                 self.set_note(
@@ -516,8 +551,51 @@ impl SettingsApp {
                             ui.add(egui::TextEdit::singleline(&mut f.host).hint_text("192.168.1.50").desired_width(160.0));
                             ui.label("Port");
                             ui.add(egui::TextEdit::singleline(&mut f.port).desired_width(48.0));
+                            if matches!(*self.scan.lock().unwrap(), Scan::Running) {
+                                ui.spinner();
+                                ui.weak("Looking…");
+                            } else if ui
+                                .small_button("Find printers")
+                                .on_hover_text("Look for printers on your network (port 9100)")
+                                .clicked()
+                            {
+                                actions.push(Action::ScanNetwork);
+                            }
                         });
                         ui.end_row();
+                        let found = match &*self.scan.lock().unwrap() {
+                            Scan::Done(found) => Some(found.clone()),
+                            _ => None,
+                        };
+                        if let Some(found) = found {
+                            ui.label("");
+                            ui.vertical(|ui| {
+                                if found.is_empty() {
+                                    ui.weak("Nothing on your network answered on port 9100.");
+                                }
+                                for p in &found {
+                                    let host = p.host.to_string();
+                                    let added = self.config.printers.iter().any(|c| {
+                                        matches!(&c.connection, Connection::Network { host: h, .. } if *h == host)
+                                    });
+                                    ui.horizontal(|ui| {
+                                        if ui.add_enabled(!added, egui::Button::new("Use").small()).clicked() {
+                                            f.host = host.clone();
+                                            f.port = "9100".into();
+                                            if let Some(d) = &p.description {
+                                                f.name = d.clone();
+                                            }
+                                        }
+                                        let label = egui::RichText::new(p.label());
+                                        ui.label(if p.is_zebra { label.strong() } else { label });
+                                        if added {
+                                            ui.weak("(added)");
+                                        }
+                                    });
+                                }
+                            });
+                            ui.end_row();
+                        }
                     }
                     Kind::Usb => {
                         ui.label("Printer");
@@ -618,6 +696,18 @@ impl SettingsApp {
                 ui.monospace(origin);
             });
         }
+        if !self.config.denied_origins.is_empty() {
+            ui.add_space(6.0);
+            ui.label("Blocked websites");
+            for origin in &self.config.denied_origins {
+                ui.horizontal(|ui| {
+                    if ui.small_button("Unblock").on_hover_text("Ask again next time it tries to print").clicked() {
+                        actions.push(Action::Unblock(origin.clone()));
+                    }
+                    ui.monospace(origin);
+                });
+            }
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let field = ui.add(
@@ -636,6 +726,14 @@ impl SettingsApp {
         let mut on = self.autostart;
         if ui.checkbox(&mut on, "Start at login").changed() {
             actions.push(Action::SetAutostart(on));
+        }
+        let mut ask = self.config.ask_new_sites;
+        if ui
+            .checkbox(&mut ask, "Ask when a new website wants to print")
+            .on_hover_text("Otherwise new websites are refused until you allow them in the Websites tab")
+            .changed()
+        {
+            actions.push(Action::SetAskNewSites(ask));
         }
         let mut zebra = self.config.zebra_compat;
         if ui

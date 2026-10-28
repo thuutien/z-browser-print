@@ -8,6 +8,9 @@
 //!   GET  /config               -> {"application": {...}}
 //!   POST /write   {device, data} as JSON text, or multipart "json" + "blob" (sendFile)
 //!   POST /read    {device}       -> what the printer has said since, or ""
+//!   POST /write   {device, url, options}  (sendUrl: we download the file)
+//!   POST /convert multipart "json" {device, options} + "blob" (convertAndSendFile, convert)
+//! Images and PDFs sent any of these ways are converted to ZPL (see convert.rs).
 //! Only status 200 counts as success; for anything else the body text goes to the
 //! page's error callback.
 //!
@@ -28,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use zprint_core::{Error, PrinterInfo, Transport};
 
+use crate::convert::{self, Kind};
 use crate::{AppState, MAX_BODY};
 
 /// Commands that make a Zebra printer answer: ~HS/~HI/~HQ..., ^HH, ^HW, ^HZ, ^HV, ^HT, SGD.
@@ -44,7 +48,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/write", post(write))
         .route("/read", post(read))
         .route("/convert", post(convert))
-        .route("/convert/scan", post(convert))
+        .route("/convert/scan", post(scan_image))
 }
 
 #[derive(Serialize)]
@@ -88,6 +92,16 @@ struct Envelope {
     device: Option<DeviceRef>,
     data: Option<String>,
     url: Option<String>,
+    options: Option<serde_json::Value>,
+}
+
+impl Envelope {
+    fn convert_options(&self) -> convert::Options {
+        self.options
+            .clone()
+            .and_then(|o| serde_json::from_value(o).ok())
+            .unwrap_or_default()
+    }
 }
 
 /// Error with a plain-text body, which BrowserPrint hands to the error callback.
@@ -134,7 +148,9 @@ async fn config() -> Response {
             "build_number": 1,
             "api_level": 2,
             "platform": "linux",
-            "supportedConversions": {},
+            "supportedConversions": {
+                "png": ["zpl"], "jpg": ["zpl"], "jpeg": ["zpl"], "gif": ["zpl"], "bmp": ["zpl"], "pdf": ["zpl"]
+            },
         }
     }))
 }
@@ -180,17 +196,24 @@ async fn write(State(st): State<Arc<AppState>>, req: Request) -> Result<Response
     let printer = find(&st, envelope.device.as_ref())?;
     let data = match (data, &envelope.url) {
         (Some(d), _) => d,
-        (None, Some(_)) => {
-            return Err(ZError(
-                StatusCode::NOT_IMPLEMENTED,
-                "sendUrl is not supported by Z Browser Print; fetch the file in the page and use send()".into(),
-            ))
+        (None, Some(url)) => {
+            let url = url.clone();
+            blocking(move || convert::fetch(&url)).await?
         }
         (None, None) => return Err(bad_request("nothing to print")),
     };
     if data.is_empty() {
         return Err(bad_request("nothing to print"));
     }
+
+    // A picture or PDF would come out as garbage; turn it into a ZPL graphic first.
+    let data = match convert::sniff(&data) {
+        Kind::Raw => data,
+        _ => {
+            let opts = envelope.convert_options();
+            blocking(move || convert::to_zpl(&data, &opts)).await?.into_bytes()
+        }
+    };
 
     deliver(&st, printer.as_ref(), &data).await?;
     tracing::info!(printer = %printer.info().id, bytes = data.len(), "printed (BrowserPrint)");
@@ -276,11 +299,38 @@ async fn read(State(st): State<Arc<AppState>>, body: Bytes) -> Result<Response, 
         .into_response())
 }
 
-async fn convert() -> ZError {
-    ZError(
-        StatusCode::NOT_IMPLEMENTED,
-        "image and PDF conversion is not supported by Z Browser Print; send ZPL instead".into(),
-    )
+/// Run slow work (downloads, image conversion) off the async threads.
+async fn blocking<T: Send + 'static>(
+    job: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, ZError> {
+    tokio::task::spawn_blocking(job)
+        .await
+        .map_err(|e| ZError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(bad_request)
+}
+
+/// convertAndSendFile() / convert(): image or PDF to ZPL, then print it or hand it back.
+async fn convert(State(st): State<Arc<AppState>>, req: Request) -> Result<Response, ZError> {
+    let (envelope, blob) = read_multipart(req, &st).await?;
+    let data = blob.ok_or_else(|| bad_request("no file given"))?;
+    let opts = envelope.convert_options();
+    let action = opts.action.clone().unwrap_or_else(|| "print".into());
+    let zpl = blocking(move || convert::to_zpl(&data, &opts)).await?;
+
+    match action.as_str() {
+        "return" => Ok(json_text(json!({ "data": zpl }))),
+        "print" => {
+            let printer = find(&st, envelope.device.as_ref())?;
+            deliver(&st, printer.as_ref(), zpl.as_bytes()).await?;
+            tracing::info!(printer = %printer.info().id, bytes = zpl.len(), "printed converted file (BrowserPrint)");
+            Ok(json_text(json!({ "status": "printed" })))
+        }
+        other => Err(ZError(StatusCode::NOT_IMPLEMENTED, format!("convert action {other:?} is not supported"))),
+    }
+}
+
+async fn scan_image() -> ZError {
+    ZError(StatusCode::NOT_IMPLEMENTED, "scanImage is not supported by Z Browser Print".into())
 }
 
 #[cfg(test)]

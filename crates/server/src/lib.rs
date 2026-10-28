@@ -1,9 +1,13 @@
 //! HTTP API that web pages call to reach local printers.
 
+mod consent;
+mod convert;
 mod guard;
 mod zebra;
 
-use std::collections::HashMap;
+pub use consent::Prompter;
+
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -32,6 +36,10 @@ pub struct Printers {
     pub default_printer: Option<String>,
     /// Extra web origins allowed to call the API, e.g. "https://app.example.com".
     pub allowed_origins: Vec<String>,
+    /// Web origins the user refused; never asked about again.
+    pub denied_origins: Vec<String>,
+    /// Ask the user when an unknown website tries to print.
+    pub ask_new_sites: bool,
 }
 
 impl Printers {
@@ -64,6 +72,12 @@ pub struct AppState {
     replies: Mutex<HashMap<String, Vec<u8>>>,
     /// Web origins that tried to print but are not allowed, newest last.
     blocked: Mutex<Vec<String>>,
+    /// Opens the "allow this website?" window; None means never ask.
+    prompter: Option<Prompter>,
+    /// Origins whose prompt window is open right now.
+    prompting: Mutex<HashSet<String>>,
+    /// Origins whose prompt was closed without an answer (not asked again until restart).
+    dismissed: Mutex<HashSet<String>>,
 }
 
 impl AppState {
@@ -78,7 +92,30 @@ impl AppState {
             changed: watch::channel(0).0,
             replies: Mutex::new(HashMap::new()),
             blocked: Mutex::new(Vec::new()),
+            prompter: None,
+            prompting: Mutex::new(HashSet::new()),
+            dismissed: Mutex::new(HashSet::new()),
         })
+    }
+
+    /// Ask the user (through `prompter`) when an unknown website tries to print.
+    pub fn with_prompter(mut self, prompter: Prompter) -> Self {
+        self.prompter = Some(prompter);
+        self
+    }
+
+    /// Our own pages and the websites the user allowed.
+    pub(crate) fn origin_allowed(&self, origin: &str) -> bool {
+        let own = [
+            format!("http://127.0.0.1:{}", self.port),
+            format!("http://localhost:{}", self.port),
+        ];
+        own.iter().any(|o| o == origin) || self.printers().allowed_origins.iter().any(|o| o == origin)
+    }
+
+    /// Wake everything waiting on `subscribe()`.
+    pub(crate) fn notify(&self) {
+        self.changed.send_modify(|n| *n += 1);
     }
 
     pub fn printers(&self) -> Arc<Printers> {
@@ -90,9 +127,9 @@ impl AppState {
         self.blocked
             .lock()
             .unwrap()
-            .retain(|o| !fresh.allowed_origins.contains(o));
+            .retain(|o| !fresh.allowed_origins.contains(o) && !fresh.denied_origins.contains(o));
         *self.current.write().unwrap() = Arc::new(fresh);
-        self.changed.send_modify(|n| *n += 1);
+        self.notify();
         tracing::info!("reloaded config");
         Ok(())
     }

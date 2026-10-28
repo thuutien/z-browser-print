@@ -2,6 +2,7 @@
 //!
 //!   zprint [--config <path>]            run the agent (HTTP API + tray icon)
 //!   zprint settings [--config <path>]   open the settings window
+//!   zprint ask-origin <origin> [...]    ask whether a website may print (used by the agent)
 
 mod tray;
 
@@ -12,11 +13,12 @@ use std::sync::Arc;
 use anyhow::{bail, Context};
 use tracing_subscriber::EnvFilter;
 use zprint_core::config::{Config, ZEBRA_PORT};
-use zprint_server::{AppState, Printers};
+use zprint_server::{AppState, Printers, Prompter};
 
 enum Mode {
     Agent,
     Settings,
+    AskOrigin(String),
 }
 
 fn parse_args() -> anyhow::Result<(Mode, Option<PathBuf>)> {
@@ -26,6 +28,7 @@ fn parse_args() -> anyhow::Result<(Mode, Option<PathBuf>)> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "settings" => mode = Mode::Settings,
+            "ask-origin" => mode = Mode::AskOrigin(args.next().context("ask-origin needs a website")?),
             "--config" => config = Some(args.next().map(PathBuf::from).context("--config needs a path")?),
             "-h" | "--help" => {
                 println!("usage: zprint [settings] [--config <path>]");
@@ -50,6 +53,7 @@ fn main() -> anyhow::Result<()> {
     match mode {
         // The window must own the main thread, so it runs outside tokio.
         Mode::Settings => zprint_settings::run(path),
+        Mode::AskOrigin(origin) => zprint_settings::ask_origin(path, origin),
         Mode::Agent => tokio::runtime::Runtime::new()?.block_on(run_agent(path)),
     }
 }
@@ -69,10 +73,22 @@ async fn run_agent(path: PathBuf) -> anyhow::Result<()> {
             list: config.printers.iter().map(zprint_transports::open).collect(),
             default_printer: config.default_printer,
             allowed_origins: config.allowed_origins,
+            denied_origins: config.denied_origins,
+            ask_new_sites: config.ask_new_sites,
         })
     });
     let zebra_port = initial.zebra_compat.then_some(ZEBRA_PORT);
-    let state = Arc::new(AppState::new(port, zebra_port, loader)?);
+    let prompt_config = path.clone();
+    let prompter: Prompter = Box::new(move |origin| {
+        tokio::process::Command::new(zprint_core::program_path()?)
+            .arg("ask-origin")
+            .arg(origin)
+            .arg("--config")
+            .arg(&prompt_config)
+            .stdin(std::process::Stdio::null())
+            .spawn()
+    });
+    let state = Arc::new(AppState::new(port, zebra_port, loader)?.with_prompter(prompter));
     tracing::info!(path = %path.display(), printers = state.printers().list.len(), "loaded config");
 
     let listener = match tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {

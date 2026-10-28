@@ -27,6 +27,18 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Path of this program, for starting more copies of it (settings window, prompts).
+///
+/// When the binary is replaced while running (a package upgrade, a rebuild), Linux
+/// reports "/usr/bin/zprint (deleted)"; the new file at the plain path is what we want.
+pub fn program_path() -> std::io::Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(live) => Ok(live.into()),
+        None => Ok(exe),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PrinterInfo {
     pub id: String,

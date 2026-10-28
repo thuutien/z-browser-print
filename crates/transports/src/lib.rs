@@ -2,6 +2,7 @@
 
 pub mod cups;
 pub mod discover;
+pub mod netscan;
 pub mod tcp;
 pub mod usb;
 
