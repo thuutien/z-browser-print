@@ -1,0 +1,17 @@
+[package]
+name = "zprint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zprint-core.workspace = true
+zprint-transports.workspace = true
+zprint-server.workspace = true
+zprint-settings.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+ksni.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

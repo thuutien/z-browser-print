@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Z Browser Print test page</title>
+<style>
+  :root { color-scheme: light dark; --border: #8884; --accent: #2563eb; }
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 16px; }
+  h1 { font-size: 1.4rem; margin-bottom: .2rem; }
+  .muted { opacity: .7; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; margin: .75rem 0; }
+  select, textarea, button, input { font: inherit; }
+  select, input { padding: .35rem .5rem; }
+  textarea { width: 100%; box-sizing: border-box; min-height: 9rem; font-family: ui-monospace, monospace; padding: .5rem; }
+  button { padding: .4rem .9rem; border: 1px solid var(--border); border-radius: 6px; background: transparent; cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  pre { border: 1px solid var(--border); border-radius: 6px; padding: .75rem; white-space: pre-wrap; word-break: break-all; min-height: 3rem; }
+</style>
+</head>
+<body>
+<h1>Z Browser Print test page</h1>
+<p class="muted" id="agent">Checking agent…</p>
+
+<div class="row">
+  <label for="printer">Printer</label>
+  <select id="printer"></select>
+  <button id="refresh">Refresh</button>
+</div>
+
+<label for="zpl">ZPL</label>
+<textarea id="zpl">^XA
+^FO50,50^A0N,50,50^FDHello from zprint^FS
+^FO50,120^BCN,100,Y,N,N^FD123456789^FS
+^XZ</textarea>
+
+<div class="row">
+  <button class="primary" id="print">Print</button>
+  <button id="status">Status</button>
+  <input id="query" value="~HQES" size="10" aria-label="Query">
+  <button id="read">Send query</button>
+</div>
+
+<pre id="out"></pre>
+
+<script src="/zprint.js"></script>
+<script>
+  const zp = new ZPrint(location.origin);
+  const $ = (id) => document.getElementById(id);
+  const show = (v) => { $("out").textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); };
+  const run = (fn) => async () => { try { await fn(); } catch (e) { show(`Error (${e.status}): ${e.message}`); } };
+
+  async function loadPrinters() {
+    const v = await zp.version();
+    $("agent").textContent = `${v.name} ${v.version} is running.`;
+    const list = await zp.printers();
+    $("printer").innerHTML = "";
+    for (const p of list) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = `${p.name} (${p.connection} ${p.address})`;
+      $("printer").append(o);
+    }
+    if (!list.length) show("No printers configured. Add one to config.toml and restart the agent.");
+  }
+
+  $("refresh").onclick = run(loadPrinters);
+  $("print").onclick = run(async () => { await zp.write($("printer").value, $("zpl").value); show("Sent."); });
+  $("status").onclick = run(async () => show(await zp.status($("printer").value)));
+  $("read").onclick = run(async () => show(await zp.read($("printer").value, $("query").value)));
+  run(loadPrinters)();
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+[package]
+name = "zprint-transports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zprint-core.workspace = true
+async-trait.workspace = true
+libc.workspace = true
+tokio = { workspace = true, features = ["process"] }

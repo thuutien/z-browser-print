@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Z Browser Print
+GenericName=Web printing for Zebra printers
+Comment=Let web pages print to Zebra label printers
+Exec=zprint settings
+Icon=zprint
+Terminal=false
+Categories=Utility;
+Keywords=zebra;browser print;browserprint;zpl;label;printer;
+StartupNotify=true
+StartupWMClass=zprint

@@ -1,0 +1,15 @@
+# Config for local testing with tools/fake_printer.py.
+port = 9180
+
+allowed_origins = [
+  # "https://app.example.com",
+]
+
+default_printer = "fake"
+
+[[printers]]
+type = "network"
+id = "fake"
+name = "Fake Zebra"
+host = "127.0.0.1"
+port = 9200

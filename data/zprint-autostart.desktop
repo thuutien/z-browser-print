@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Z Browser Print
+Comment=Let web pages print to Zebra label printers
+Exec=zprint
+Icon=zprint
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
