@@ -1,6 +1,10 @@
 #!/bin/sh
 # Build a .deb package for Linux Mint / Ubuntu / Debian.
 # Usage: ./packaging/build-deb.sh   ->   dist/z-browser-print_<version>_amd64.deb
+#
+# On a distro newer than the target (Arch, Fedora...), set GLIBC to the oldest
+# glibc the package must run on, e.g. GLIBC=2.39 for Ubuntu 24.04 / Mint 22.
+# That builds with cargo-zigbuild (cargo install cargo-zigbuild, plus zig on PATH).
 set -e
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$SRC/Cargo.toml" | head -1)
@@ -8,10 +12,17 @@ ARCH=$(dpkg --print-architecture)
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
-(cd "$SRC" && cargo build --release -p zprint)
+if [ -n "$GLIBC" ]; then
+    TARGET=x86_64-unknown-linux-gnu
+    (cd "$SRC" && cargo zigbuild --release -p zprint --target "$TARGET.$GLIBC")
+    BIN="$SRC/target/$TARGET/release/zprint"
+else
+    (cd "$SRC" && cargo build --release -p zprint)
+    BIN="$SRC/target/release/zprint"
+fi
 
 chmod 755 "$STAGE"
-install -D -m 755 "$SRC/target/release/zprint" "$STAGE/usr/bin/zprint"
+install -D -m 755 "$BIN" "$STAGE/usr/bin/zprint"
 sed '1s|.*|#!/usr/bin/python3|' "$SRC/tools/fake_printer.py" > "$STAGE/usr/bin/zprint-fake-printer"
 chmod 755 "$STAGE/usr/bin/zprint-fake-printer"
 install -D -m 644 "$SRC/data/zprint.desktop" "$STAGE/usr/share/applications/zprint.desktop"
