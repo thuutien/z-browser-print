@@ -4539,7 +4539,7 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zprint"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -4555,7 +4555,7 @@ dependencies = [
 
 [[package]]
 name = "zprint-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4567,7 +4567,7 @@ dependencies = [
 
 [[package]]
 name = "zprint-server"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -4582,7 +4582,7 @@ dependencies = [
 
 [[package]]
 name = "zprint-settings"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "directories",
@@ -4595,7 +4595,7 @@ dependencies = [
 
 [[package]]
 name = "zprint-transports"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "libc",

@@ -4,12 +4,14 @@
 mod agent;
 mod autostart;
 mod prompt;
+mod single;
 
 pub use prompt::run as ask_origin;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 use zprint_core::config::{Config, Connection, PrinterConfig, RAW_PORT};
@@ -25,6 +27,11 @@ const WARN: egui::Color32 = egui::Color32::from_rgb(214, 132, 20);
 pub(crate) const ICON_RGBA: &[u8] = include_bytes!("../../../data/zprint-64.rgba");
 
 pub fn run(config_path: PathBuf) -> anyhow::Result<()> {
+    let (listener, socket) = match single::claim() {
+        single::Claim::Owner(listener, socket) => (Some(listener), Some(socket)),
+        single::Claim::AlreadyOpen => return Ok(()),
+        single::Claim::Unavailable => (None, None),
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_NAME)
@@ -34,15 +41,35 @@ pub fn run(config_path: PathBuf) -> anyhow::Result<()> {
             .with_icon(egui::IconData { rgba: ICON_RGBA.to_vec(), width: 64, height: 64 }),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         APP_NAME,
         options,
         Box::new(move |cc| {
             cc.egui_ctx.all_styles_mut(compact_style);
-            Ok(Box::new(SettingsApp::new(config_path)))
+            let app = SettingsApp::new(config_path);
+            if let Some(listener) = listener {
+                let (raise, ctx) = (app.raise.clone(), cc.egui_ctx.clone());
+                std::thread::spawn(move || {
+                    for _ in listener.incoming() {
+                        raise.store(true, Ordering::Relaxed);
+                        ctx.request_repaint();
+                    }
+                });
+            }
+            Ok(Box::new(app))
         }),
     )
-    .map_err(|e| anyhow::anyhow!("could not open the settings window: {e}"))
+    .map_err(|e| anyhow::anyhow!("could not open the settings window: {e}"));
+    if let Some(socket) = socket {
+        let _ = std::fs::remove_file(socket);
+    }
+    result
+}
+
+/// What the config file looked like when we last read or wrote it.
+fn file_stamp(path: &Path) -> Option<(SystemTime, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 pub(crate) fn compact_style(style: &mut egui::Style) {
@@ -125,6 +152,11 @@ enum Action {
 struct SettingsApp {
     path: PathBuf,
     config: Config,
+    /// The config file as of our last load or save, to notice the tray or the
+    /// "Allow this website?" window changing it.
+    stamp: Option<(SystemTime, u64)>,
+    /// Another `zprint settings` asked this window to come to the front.
+    raise: Arc<AtomicBool>,
     rt: tokio::runtime::Runtime,
     /// Last message for the status bar; written by background jobs too.
     note: Arc<Mutex<Option<Note>>>,
@@ -158,6 +190,8 @@ impl SettingsApp {
             ),
         };
         let mut app = Self {
+            stamp: file_stamp(&path),
+            raise: Arc::new(AtomicBool::new(false)),
             path,
             config,
             rt: tokio::runtime::Builder::new_multi_thread()
@@ -237,12 +271,27 @@ impl SettingsApp {
         ctx.request_repaint_after(AGENT_POLL);
     }
 
+    /// Pick up changes other processes made to the config file, so our next save
+    /// doesn't undo them. Waits while a printer name is being edited.
+    fn reload_if_changed(&mut self) {
+        let now = file_stamp(&self.path);
+        if now == self.stamp || self.rename_pending {
+            return;
+        }
+        self.stamp = now;
+        match Config::load(&self.path) {
+            Ok(config) => self.config = config,
+            Err(e) => self.set_note(format!("Could not read {}: {e:#}", self.path.display()), true),
+        }
+    }
+
     /// Save the config and tell the agent to pick it up.
-    fn save(&self, what: &str) {
+    fn save(&mut self, what: &str) {
         if let Err(e) = self.config.save(&self.path) {
             self.set_note(format!("Could not save: {e:#}"), true);
             return;
         }
+        self.stamp = file_stamp(&self.path);
         let (port, note, what) = (self.config.port, self.note.clone(), what.to_owned());
         std::thread::spawn(move || {
             let text = match agent::reload(port) {
@@ -782,6 +831,14 @@ impl SettingsApp {
 impl eframe::App for SettingsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.raise.swap(false, Ordering::Relaxed) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
+        self.reload_if_changed();
         self.poll_agent(&ctx);
         let mut actions = Vec::new();
 

@@ -27,7 +27,7 @@ Build the `.deb` package and install it:
 
 ```bash
 ./packaging/build-deb.sh
-sudo apt install ./dist/z-browser-print_0.4.0_amd64.deb
+sudo apt install ./dist/z-browser-print_0.4.1_amd64.deb
 ```
 
 Building needs Rust (https://rustup.rs). Printing PDFs needs `poppler-utils`, which the
